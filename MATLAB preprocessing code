@@ -1,0 +1,218 @@
+% ManySig RF Fingerprinting - MATLAB Preprocessing Pipeline
+% Data: Equalized ManySig data (eq = 1)
+% Split (cross-day):
+%   Training   : Day 1 + Day 2
+%   Validation : Day 3
+%   Testing    : Day 4
+%
+% Every sample also carries its receiver ID (meta.rx, 1..12) and day (meta.day),
+% so the Python code can build CROSS-RECEIVER splits (hold out whole receivers)
+% from the same train/val/test files.
+
+clear;
+clc;
+close all;
+
+%% 1. DATA PATH
+dataDir = 'C:\Users\tania\Downloads\ManySig';
+outputDir = fullfile(dataDir, 'processed');
+
+if ~exist(outputDir, 'dir')
+    mkdir(outputDir);
+end
+
+%% 2. DATASET CHARACTERISTICS
+numTx = 6;
+numRx = 12;
+numSignals = 1000;
+signalLength = 256;
+
+% Use already equalized ManySig data
+eqIndex = 1;
+
+%% 3. TRANSMITTER NAMES
+txNames = {
+    '14-10'
+    '14-7'
+    '20-15'
+    '20-19'
+    '6-15'
+    '8-20'
+};
+
+%% 4. RECEIVER NAMES (index in this list = meta.rx value)
+rxNames = {
+    '1-1'
+    '1-19'
+    '14-7'
+    '18-2'
+    '19-2'
+    '2-1'
+    '2-19'
+    '20-1'
+    '3-19'
+    '7-14'
+    '7-7'
+    '8-8'
+};
+
+%% 5. TRAIN / VALIDATION / TEST FILES
+% Day 1 = 2021_03_01, Day 2 = 2021_03_08, Day 3 = 2021_03_15, Day 4 = 2021_03_23
+trainFiles = {fullfile(dataDir, 'day1_eq1.mat')
+              fullfile(dataDir, 'day2_eq1.mat')};
+valFiles   = {fullfile(dataDir, 'day3_eq1.mat')};
+testFiles  = {fullfile(dataDir, 'day4_eq1.mat')};
+
+%% 6. PROCESS TRAINING DATA
+fprintf('PROCESSING TRAINING DATA\n');
+[X_train, Y_train, meta_train] = processManySigFiles(trainFiles, numTx, numRx, numSignals, signalLength);
+
+%% 7. PROCESS VALIDATION DATA
+fprintf('PROCESSING VALIDATION DATA\n');
+[X_val, Y_val, meta_val] = processManySigFiles(valFiles, numTx, numRx, numSignals, signalLength);
+
+%% 8. PROCESS TEST DATA
+fprintf('PROCESSING TEST DATA\n');
+[X_test, Y_test, meta_test] = processManySigFiles(testFiles, numTx, numRx, numSignals, signalLength);
+
+%% 9. NUMERIC LABELS (1..numTx) - used by the Python code
+Y_train_num = uint8(Y_train);
+Y_val_num   = uint8(Y_val);
+Y_test_num  = uint8(Y_test);
+
+% Receiver / day vectors (also stored inside meta_*, saved separately for convenience)
+rx_train = uint8(meta_train.rx);  day_train = uint8(meta_train.day);
+rx_val   = uint8(meta_val.rx);    day_val   = uint8(meta_val.day);
+rx_test  = uint8(meta_test.rx);   day_test  = uint8(meta_test.day);
+
+%% 10. CONVERT NUMERIC LABELS TO CATEGORICAL LABELS
+Y_train = categorical(Y_train_num, 1:numTx, txNames);
+Y_val   = categorical(Y_val_num,   1:numTx, txNames);
+Y_test  = categorical(Y_test_num,  1:numTx, txNames);
+
+%% 11. DATASET SUMMARY
+fprintf('\nDATASET SUMMARY\n');
+fprintf('Training samples   : %d\n', size(X_train,1));
+fprintf('Validation samples : %d\n', size(X_val,1));
+fprintf('Testing samples    : %d\n', size(X_test,1));
+fprintf('Features per sample: %d\n', size(X_train,2));
+fprintf('Number of classes  : %d\n', numTx);
+
+fprintf('\nTraining class distribution:\n');
+for c = 1:numTx
+    count = sum(Y_train_num == c);
+    fprintf('Class %d (%s): %d samples\n', c-1, txNames{c}, count);
+end
+
+% Samples per receiver in each split (needed for cross-receiver evaluation)
+fprintf('\nSamples per receiver (rx : train / val / test):\n');
+for r = 1:numRx
+    fprintf('rx %2d (%5s): %6d / %6d / %6d\n', r, rxNames{r}, ...
+        sum(meta_train.rx == r), sum(meta_val.rx == r), sum(meta_test.rx == r));
+end
+
+fprintf('\nDays present: train = %s | val = %s | test = %s\n', ...
+    mat2str(unique(meta_train.day)'), mat2str(unique(meta_val.day)'), mat2str(unique(meta_test.day)'));
+
+%% 12. DATA QUALITY CHECK
+fprintf('\nDATA QUALITY CHECK\n');
+fprintf('Training NaN   : %d\n', any(isnan(X_train(:))));
+fprintf('Validation NaN : %d\n', any(isnan(X_val(:))));
+fprintf('Testing NaN    : %d\n', any(isnan(X_test(:))));
+fprintf('Training Inf   : %d\n', any(isinf(X_train(:))));
+fprintf('Validation Inf : %d\n', any(isinf(X_val(:))));
+fprintf('Testing Inf    : %d\n', any(isinf(X_test(:))));
+
+% Metadata sanity checks (receiver IDs must cover 1..numRx in every split)
+assert(isequal(unique(meta_train.rx)', 1:numRx), 'Training split is missing receivers');
+assert(isequal(unique(meta_val.rx)',   1:numRx), 'Validation split is missing receivers');
+assert(isequal(unique(meta_test.rx)',  1:numRx), 'Test split is missing receivers');
+
+%% 13. SAVE PROCESSED DATA
+fprintf('\nSAVING PROCESSED DATA\n');
+
+save(fullfile(outputDir, 'train.mat'), ...
+    'X_train', 'Y_train', 'Y_train_num', 'meta_train', 'rx_train', 'day_train', '-v7.3');
+
+save(fullfile(outputDir, 'val.mat'), ...
+    'X_val', 'Y_val', 'Y_val_num', 'meta_val', 'rx_val', 'day_val', '-v7.3');
+
+save(fullfile(outputDir, 'test.mat'), ...
+    'X_test', 'Y_test', 'Y_test_num', 'meta_test', 'rx_test', 'day_test', '-v7.3');
+
+save(fullfile(outputDir, 'dataset_info.mat'), ...
+    'txNames', 'rxNames', 'eqIndex', 'numTx', 'numRx', 'numSignals', 'signalLength');
+
+fprintf('\nProcessing complete.\n');
+fprintf('Files saved in:\n%s\n', outputDir);
+
+%% LOCAL FUNCTION
+function [X, Y, metadata] = processManySigFiles(fileList, numTx, numRx, numSignals, signalLength)
+
+    numFiles = numel(fileList);
+    totalSignals = numTx * numRx * numSignals * numFiles;
+
+    % Each signal: 256 I + 256 Q = 512 features
+    numFeatures = signalLength * 2;
+
+    X = zeros(totalSignals, numFeatures, 'single');
+    Y = zeros(totalSignals, 1);
+
+    metadata.tx  = zeros(totalSignals, 1);
+    metadata.rx  = zeros(totalSignals, 1);
+    metadata.day = zeros(totalSignals, 1);
+
+    counter = 0;
+
+    for fileIdx = 1:numFiles
+
+        fprintf('\nLoading: %s\n', fileList{fileIdx});
+        S = load(fileList{fileIdx});
+        data = S.data;
+        [~, filename, ~] = fileparts(fileList{fileIdx});
+        dayNumber = sscanf(filename, 'day%d');
+
+        for tx = 1:numTx
+            fprintf('Processing Tx %d/%d...\n', tx, numTx);
+
+            for rx = 1:numRx
+                signals = data{tx, rx};
+
+                if size(signals,1) ~= numSignals
+                    error('Tx %d / Rx %d in %s has %d signals, expected %d', ...
+                        tx, rx, filename, size(signals,1), numSignals);
+                end
+
+                % Extract I and Q for all signals at once (numSignals x 256)
+                I = double(signals(:,:,1));
+                Q = double(signals(:,:,2));
+
+                % Per-signal power normalization: P = sqrt(mean(I^2 + Q^2))
+                power = sqrt(mean(I.^2 + Q.^2, 2));
+                power(power == 0) = 1;
+                I = I ./ power;
+                Q = Q ./ power;
+
+                % Store: [I1 ... I256 Q1 ... Q256]
+                idx = counter + (1:numSignals);
+                X(idx, :) = single([I Q]);
+                Y(idx) = tx;
+
+                metadata.tx(idx)  = tx;
+                metadata.rx(idx)  = rx;
+                metadata.day(idx) = dayNumber;
+
+                counter = counter + numSignals;
+            end
+        end
+    end
+
+    % Remove unused rows if any
+    X = X(1:counter, :);
+    Y = Y(1:counter);
+    metadata.tx  = metadata.tx(1:counter);
+    metadata.rx  = metadata.rx(1:counter);
+    metadata.day = metadata.day(1:counter);
+
+    fprintf('Processed %d signals.\n', counter);
+end
